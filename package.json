@@ -1,0 +1,19 @@
+{
+  "name": "joki-voucher-bot",
+  "version": "1.0.0",
+  "description": "Bot Telegram Joki Voucher Shopee",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@sparticuz/chromium": "^148.0.0",
+    "axios": "^1.14.0",
+    "node-telegram-bot-api": "^0.67.0",
+    "puppeteer": "^25.0.4",
+    "puppeteer-core": "^19.11.1"
+  }
+}
