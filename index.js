@@ -12,20 +12,17 @@ const EXTRA_ARGS = [
   '--single-process', '--no-zygote',
 ];
 
-const MAX_CONCURRENT     = 3;
+const MAX_CONCURRENT     = 10;
 const MAX_QUEUE_SIZE     = 50;
-const TASK_TIMEOUT_MS    = 50000;
+const TASK_TIMEOUT_MS    = 70000;
 const BROWSER_MAX_AGE_MS = 2 * 60 * 60 * 1000;
+const RESULT_DELETE_MS   = 60000; // ← hapus pesan hasil setelah 1 menit
 
 // Nomor test untuk debug (nomor acak, hanya untuk uji)
 const DEBUG_PHONES = [
   '08111111111',
   '08222222222',
   '08333333333',
-  '08444444444',
-  '08555555555',
-  '08666666666',
-  '08777777777',
 ];
 
 // ─── Queue ────────────────────────────────────────────────────────────────────
@@ -39,7 +36,7 @@ function processQueue() {
 
     queue.forEach((t, i) => {
       if (t.chatId && t.loadingId) {
-        bot.editMessageText(`⏳ Antrian ke-${i + 1}... (${maskPhone(t.phone)})`, {
+        bot.editMessageText(`⏳ ${t.sender} | Antrian ke-${i + 1}... (${maskPhone(t.phone)})`, {
           chat_id: t.chatId, message_id: t.loadingId,
         }).catch(() => {});
       }
@@ -71,27 +68,38 @@ async function runTask(task) {
     }
 
     const statusText = (res.error === 0 && exist)
-      ? `✅ ${masked} — Terdaftar di Shopee`
+      ? `✅ ${task.sender} | ${masked} — Terdaftar di Shopee`
       : (res.error === 0 && !exist)
-        ? `❌ ${masked} — Tidak terdaftar`
-        : `⚠️ ${masked} — Gagal cek (error ${res.error})`;
+        ? `❌ ${task.sender} | ${masked} — Tidak terdaftar`
+        : `⚠️ ${task.sender} | ${masked} — Gagal cek (error ${res.error})`;
 
     if (task.chatId && task.loadingId) {
       await safeSend(() =>
         bot.editMessageText(statusText, { chat_id: task.chatId, message_id: task.loadingId })
       );
+      // ← hapus pesan hasil setelah RESULT_DELETE_MS
+      deleteAfter(task.chatId, task.loadingId, RESULT_DELETE_MS);
     }
   } catch (err) {
     const durasi = ((Date.now() - start) / 1000).toFixed(1);
     console.error(`[HASIL] ⚠️ GAGAL        → ${task.phone} | ${err.message} (${durasi}s)`);
     if (task.chatId && task.loadingId) {
       await safeSend(() =>
-        bot.editMessageText(`⚠️ ${masked} — Gagal cek (timeout/error)`, {
+        bot.editMessageText(`⚠️ ${task.sender} | ${masked} — Gagal cek (timeout/error)`, {
           chat_id: task.chatId, message_id: task.loadingId,
         })
       ).catch(() => {});
+      // ← hapus pesan hasil setelah RESULT_DELETE_MS
+      deleteAfter(task.chatId, task.loadingId, RESULT_DELETE_MS);
     }
   }
+}
+
+// ─── Auto-delete helper ───────────────────────────────────────────────────────
+function deleteAfter(chatId, messageId, ms) {
+  setTimeout(() => {
+    bot.deleteMessage(chatId, messageId).catch(() => {});
+  }, ms);
 }
 
 function withTimeout(promise, ms) {
@@ -177,9 +185,8 @@ function extractPhones(text) {
 }
 
 function maskPhone(phone) {
-  if (phone.length <= 6) return phone;
-  const start = Math.floor((phone.length - 5) / 2);
-  return phone.slice(0, start) + '*****' + phone.slice(start + 5);
+  if (phone.length <= 8) return phone;
+  return phone.slice(0, 4) + '****' + phone.slice(-4);
 }
 
 function isBrowserError(err) {
@@ -207,10 +214,12 @@ async function checkPhone(phone, attempt = 0) {
       }
     });
 
-    await page.goto(SHOPEE_RESET_URL, { waitUntil: 'networkidle2', timeout: 35000 });
-    await sleep(2500);
+    await page.goto(SHOPEE_RESET_URL, { waitUntil: 'domcontentloaded', timeout: 20000 });
 
-    const input = await page.$('input[type="text"],input[type="tel"],input[type="email"],input');
+    const input = await page.waitForSelector(
+      'input[type="text"],input[type="tel"],input[type="email"],input',
+      { timeout: 25000 }
+    );
     if (!input) throw new Error('Input tidak ditemukan di halaman Shopee');
 
     await input.click({ clickCount: 3 });
@@ -218,7 +227,7 @@ async function checkPhone(phone, attempt = 0) {
     await sleep(1000);
     await page.keyboard.press('Enter');
 
-    for (let i = 0; i < 24 && !apiResult; i++) {
+    for (let i = 0; i < 40 && !apiResult; i++) {
       await sleep(500);
     }
 
@@ -305,12 +314,14 @@ bot.on('message', async (msg) => {
 
   try { await bot.deleteMessage(chatId, msg.message_id); } catch (_) {}
 
+  const sender = msg.from?.username ? `@${msg.from.username}` : (msg.from?.first_name || 'User');
+
   for (const phone of phones) {
     const masked = maskPhone(phone);
 
     if (queue.length + activeChecks >= MAX_QUEUE_SIZE) {
       await safeSend(() =>
-        bot.sendMessage(chatId, `🚫 ${masked} — Antrian penuh (maks ${MAX_QUEUE_SIZE}), coba lagi nanti`)
+        bot.sendMessage(chatId, `🚫 ${sender} | ${masked} — Antrian penuh (maks ${MAX_QUEUE_SIZE}), coba lagi nanti`)
       ).catch(() => {});
       continue;
     }
@@ -318,8 +329,8 @@ bot.on('message', async (msg) => {
     const posisiAntrian   = queue.length;
     const sedangDiproses  = activeChecks < MAX_CONCURRENT && posisiAntrian === 0;
     const teks = sedangDiproses
-      ? `🔍 Mengecek ${masked}...`
-      : `⏳ Antrian ke-${posisiAntrian + 1}... (${masked})`;
+      ? `🔍 ${sender} | Mengecek ${masked}...`
+      : `⏳ ${sender} | Antrian ke-${posisiAntrian + 1}... (${masked})`;
 
     let loadingId = null;
     try {
@@ -327,7 +338,7 @@ bot.on('message', async (msg) => {
       loadingId = loadMsg?.message_id;
     } catch (_) { continue; }
 
-    queue.push({ phone, chatId, loadingId });
+    queue.push({ phone, chatId, loadingId, sender });
     processQueue();
   }
 });
